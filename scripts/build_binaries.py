@@ -15,6 +15,17 @@ def _data_arg(src: str, dst: str) -> str:
     return f"{src}{sep}{dst}"
 
 
+def _resolve_icon_for_platform() -> Path | None:
+    if not ICON_PATH.exists():
+        return None
+    suffix = ICON_PATH.suffix.lower()
+    if sys.platform.startswith("win"):
+        return ICON_PATH if suffix in {".ico", ".exe"} else None
+    if sys.platform == "darwin":
+        return ICON_PATH if suffix == ".icns" else None
+    return ICON_PATH
+
+
 def _run_pyinstaller(name: str, entry: str) -> None:
     cmd = [
         sys.executable,
@@ -31,8 +42,14 @@ def _run_pyinstaller(name: str, entry: str) -> None:
         _data_arg(str(ROOT / "tls"), "tls"),
         str(ROOT / entry),
     ]
-    if ICON_PATH.exists():
-        cmd.extend(["--icon", str(ICON_PATH)])
+    icon_path = _resolve_icon_for_platform()
+    if icon_path is not None:
+        cmd.extend(["--icon", str(icon_path)])
+    elif ICON_PATH.exists():
+        print(
+            f"Skipping icon for this platform: {ICON_PATH} "
+            f"(unsupported format on {sys.platform})"
+        )
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True, cwd=ROOT)
 
