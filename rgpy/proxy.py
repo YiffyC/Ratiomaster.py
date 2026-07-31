@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import re
 import socket
 import ssl
@@ -18,7 +17,6 @@ from .utils import get_resource_path
 
 @dataclass
 class TorrentStats:
-    actual_first: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     actual_last: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     actual_sum: dict[str, tuple[int, int]] = field(default_factory=dict)
 
@@ -36,9 +34,6 @@ class TorrentStats:
     def update_actual(self, info_hash: str, event: str, down: int, up: int, left: int) -> tuple[int, int]:
         prev_down = 0
         prev_up = 0
-
-        if info_hash not in self.actual_first:
-            self.actual_first[info_hash] = (down, up, left)
 
         self.actual_sum.setdefault(info_hash, (0, 0))
         if info_hash in self.actual_last and event != "started":
@@ -86,6 +81,412 @@ class UdpEnvelope:
     socks5: bool = False
 
 
+class _PeerWireInspector:
+    """Passively decodes the BEP3 handshake/bitfield/have messages of a plaintext
+    peer-wire stream, to observe what a client reveals about its own piece
+    possession independently of tracker announces. Read-only: never touches
+    the bytes it inspects. Gives up silently on anything that isn't plain
+    unencrypted BitTorrent (e.g. MSE/PE-encrypted peers, or non-BT CONNECT
+    traffic such as regular HTTPS).
+
+    `piece_totals` is shared across every inspector on the same proxy, keyed
+    by info_hash: a bitfield's length alone (regardless of which bits are set,
+    or which side of the connection sent it) reveals the torrent's total piece
+    count, so a peer's own bitfield can teach us the total even without ever
+    reporting on that peer's own progress."""
+
+    MAX_BUFFER = 4096
+
+    def __init__(self, piece_totals: dict[str, int], report: bool = True) -> None:
+        self.buffer = bytearray()
+        self.handshake_done = False
+        self.aborted = False
+        self.have_count = 0
+        self.info_hash: str | None = None
+        self.piece_totals = piece_totals
+        self.report = report
+
+    def _progress(self, owned: int) -> str:
+        total = self.piece_totals.get(self.info_hash or "", 0)
+        if total:
+            return f"{owned}/~{total} pieces ({100 * owned / total:.0f}%)"
+        return f"{owned} pieces (total inconnu)"
+
+    def feed(self, chunk: bytes) -> list[str]:
+        if self.aborted:
+            return []
+        notes: list[str] = []
+        self.buffer += chunk
+
+        if not self.handshake_done:
+            if not self.buffer:
+                return notes
+            pstrlen = self.buffer[0]
+            handshake_len = 1 + pstrlen + 8 + 20 + 20
+            if handshake_len > self.MAX_BUFFER or len(self.buffer) > self.MAX_BUFFER:
+                self.aborted = True
+                self.buffer.clear()
+                return notes
+            if len(self.buffer) < handshake_len:
+                return notes
+            handshake = bytes(self.buffer[:handshake_len])
+            del self.buffer[:handshake_len]
+            self.handshake_done = True
+            info_hash_offset = 1 + pstrlen + 8
+            self.info_hash = handshake[info_hash_offset : info_hash_offset + 20].hex()
+
+        while len(self.buffer) >= 4:
+            length = int.from_bytes(self.buffer[0:4], "big")
+            if length == 0:
+                del self.buffer[:4]
+                continue
+            if length > self.MAX_BUFFER:
+                self.aborted = True
+                self.buffer.clear()
+                return notes
+            if len(self.buffer) < 4 + length:
+                break
+            msg = bytes(self.buffer[4 : 4 + length])
+            del self.buffer[: 4 + length]
+            msg_id = msg[0]
+            payload = msg[1:]
+            if msg_id == 5:
+                total_bits = len(payload) * 8
+                owned = sum(bin(b).count("1") for b in payload)
+                self.have_count = owned
+                if self.info_hash and self.info_hash not in self.piece_totals:
+                    # Fallback only: bitfield length reveals an upper bound because
+                    # the last byte may contain zero padding bits. Exact totals can
+                    # be populated by the rewriter from qBittorrent's .torrent.
+                    self.piece_totals[self.info_hash] = total_bits
+                if self.report:
+                    notes.append(f"bitfield envoye: {self._progress(owned)}")
+            elif msg_id == 4 and len(payload) >= 4:
+                self.have_count += 1
+                if self.report:
+                    notes.append(f"have envoye: {self._progress(self.have_count)}")
+        return notes
+
+import os
+from pathlib import Path
+
+import bencodepy
+
+
+class _PeerWireRewriter:
+    """
+    Réécrit le flux BitTorrent Peer Wire sortant.
+
+    Pour chaque connexion :
+    - lit le handshake BitTorrent ;
+    - récupère l'info_hash ;
+    - retrouve automatiquement le .torrent qBittorrent ;
+    - détermine le nombre exact de pièces ;
+    - remplace le message BITFIELD par un bitfield "100 % possédé".
+
+    Les autres messages sont laissés inchangés.
+    """
+
+    MAX_MESSAGE_SIZE = 16 * 1024 * 1024
+
+    def __init__(self, piece_totals: dict[str, int] | None = None) -> None:
+        self.buffer = bytearray()
+
+        self.handshake_done = False
+        self.aborted = False
+
+        self.info_hash: str | None = None
+        self.piece_count: int | None = None
+        self.piece_totals = piece_totals
+
+        self.torrent_dir = self._get_qbittorrent_torrent_dir()
+
+    @staticmethod
+    def _get_qbittorrent_torrent_dir() -> Path:
+        """
+        Dossier BT_backup de qBittorrent sous Windows.
+        """
+
+        local_app_data = os.environ.get("LOCALAPPDATA")
+
+        if not local_app_data:
+            raise RuntimeError(
+                "LOCALAPPDATA introuvable : impossible de localiser qBittorrent"
+            )
+
+        return Path(local_app_data) / "qBittorrent" / "BT_backup"
+
+    def _torrent_path(self) -> Path | None:
+        """
+        Retrouve le .torrent correspondant à l'info_hash de la connexion.
+        """
+
+        if not self.info_hash:
+            return None
+
+        # qBittorrent utilise normalement l'info hash comme nom du fichier.
+        candidates = (
+            self.torrent_dir / f"{self.info_hash.lower()}.torrent",
+            self.torrent_dir / f"{self.info_hash.upper()}.torrent",
+        )
+
+        for path in candidates:
+            if path.is_file():
+                return path
+
+        return None
+
+    def _load_piece_count(self) -> int | None:
+        """
+        Lit le .torrent et retourne le nombre exact de pièces BitTorrent v1.
+
+        info[b"pieces"] contient les SHA-1 concaténés :
+        20 octets par pièce.
+        """
+
+        path = self._torrent_path()
+
+        if path is None:
+            return None
+
+        try:
+            metadata = bencodepy.decode(path.read_bytes())
+
+            info = metadata.get(b"info")
+
+            if not isinstance(info, dict):
+                return None
+
+            pieces = info.get(b"pieces")
+
+            if not isinstance(pieces, bytes):
+                # Torrent v2 pur, ou format non pris en charge ici.
+                return None
+
+            if len(pieces) % 20 != 0:
+                return None
+
+            return len(pieces) // 20
+
+        except Exception:
+            return None
+
+    @staticmethod
+    def _full_bitfield(piece_count: int) -> bytes:
+        """
+        Fabrique un bitfield BitTorrent où toutes les pièces sont présentes.
+
+        Exemple :
+            10 pièces -> FF C0
+
+        Les bits de padding du dernier octet restent à 0.
+        """
+
+        if piece_count <= 0:
+            return b""
+
+        byte_count = (piece_count + 7) // 8
+
+        result = bytearray([0xFF] * byte_count)
+
+        remaining = piece_count % 8
+
+        if remaining:
+            # Exemple pour 10 pièces :
+            #
+            # FF FF
+            # devient
+            # FF C0
+            #
+            # car seulement 2 bits sont valides dans le dernier octet.
+            result[-1] = (0xFF << (8 - remaining)) & 0xFF
+
+        return bytes(result)
+
+    @staticmethod
+    def _build_message(msg_id: int, payload: bytes) -> bytes:
+        """
+        Construit :
+            [length:4][message id:1][payload]
+        """
+
+        length = 1 + len(payload)
+
+        return (
+            length.to_bytes(4, "big")
+            + bytes([msg_id])
+            + payload
+        )
+
+    def _rewrite_message(self, msg_id: int, payload: bytes) -> bytes:
+
+        if msg_id == 5:
+            if self.piece_count is None:
+                print(
+                    "[P2P BITFIELD] NON MODIFIE",
+                    "piece_count inconnu",
+                    f"original={payload.hex()}",
+                )
+            else:
+                original = payload
+                payload = self._full_bitfield(self.piece_count)
+
+                original_owned = sum(b.bit_count() for b in original)
+                rewritten_owned = sum(b.bit_count() for b in payload)
+
+                print(
+                    "[P2P BITFIELD] MODIFIE",
+                    f"{original_owned} -> {rewritten_owned} pieces",
+                    f"bytes={len(payload)}",
+                    f"first={payload[:4].hex()}",
+                    f"last={payload[-1:].hex()}",
+                )
+
+        return self._build_message(msg_id, payload)
+
+    def feed(self, chunk: bytes) -> bytes:
+        """
+        Fournit un morceau du flux TCP et retourne les données pouvant être
+        immédiatement transmises au peer.
+
+        Important :
+        recv() n'est pas aligné sur les messages BitTorrent, donc cette méthode
+        bufferise les données jusqu'à avoir des messages complets.
+        """
+
+        if self.aborted:
+            return chunk
+
+        self.buffer += chunk
+        output = bytearray()
+
+        # -------------------------------------------------------------
+        # Handshake
+        # -------------------------------------------------------------
+
+        if not self.handshake_done:
+            if len(self.buffer) < 1:
+                return b""
+
+            pstrlen = self.buffer[0]
+
+            handshake_length = (
+                1
+                + pstrlen
+                + 8
+                + 20
+                + 20
+            )
+
+            if handshake_length > 512:
+                # Ce n'est probablement pas un handshake BitTorrent plaintext.
+                self.aborted = True
+
+                result = bytes(self.buffer)
+                self.buffer.clear()
+
+                return result
+
+            if len(self.buffer) < handshake_length:
+                return b""
+
+            handshake = bytes(
+                self.buffer[:handshake_length]
+            )
+
+            del self.buffer[:handshake_length]
+
+            # Vérification minimale du protocole
+            protocol = handshake[
+                1 : 1 + pstrlen
+            ]
+
+            if protocol != b"BitTorrent protocol":
+                self.aborted = True
+
+                output += handshake
+                output += self.buffer
+                self.buffer.clear()
+
+                return bytes(output)
+
+            info_hash_offset = 1 + pstrlen + 8
+
+            info_hash_bytes = handshake[
+                info_hash_offset : info_hash_offset + 20
+            ]
+
+            self.info_hash = info_hash_bytes.hex()
+
+            # On connaît maintenant le torrent correspondant.
+            self.piece_count = self._load_piece_count()
+            print(
+            "[P2P HANDSHAKE]",
+            f"info_hash={self.info_hash}",
+            f"piece_count={self.piece_count}",
+            f"torrent={self._torrent_path()}",)
+
+            if self.info_hash and self.piece_count is not None and self.piece_totals is not None:
+                self.piece_totals[self.info_hash] = self.piece_count
+
+            self.handshake_done = True
+
+            # Le handshake lui-même n'est pas modifié.
+            output += handshake
+
+        # -------------------------------------------------------------
+        # Messages Peer Wire
+        # -------------------------------------------------------------
+
+        while len(self.buffer) >= 4:
+            length = int.from_bytes(
+                self.buffer[:4],
+                "big",
+            )
+
+            # KEEP-ALIVE
+            if length == 0:
+                output += self.buffer[:4]
+                del self.buffer[:4]
+                continue
+
+            if length > self.MAX_MESSAGE_SIZE:
+                # Flux inattendu : on arrête de réécrire pour ne pas casser
+                # la connexion.
+                self.aborted = True
+
+                output += self.buffer
+                self.buffer.clear()
+
+                break
+
+            full_length = 4 + length
+
+            # Message incomplet : attendre le prochain recv().
+            if len(self.buffer) < full_length:
+                break
+
+            message = bytes(
+                self.buffer[4:full_length]
+            )
+
+            del self.buffer[:full_length]
+
+            if not message:
+                continue
+
+            msg_id = message[0]
+            payload = message[1:]
+
+            rewritten = self._rewrite_message(
+                msg_id,
+                payload,
+            )
+
+            output += rewritten
+
+        return bytes(output)
+
 class RatioGhostProxy:
     def __init__(self, settings: dict, verbose: bool = False):
         self.settings = settings
@@ -99,6 +500,7 @@ class RatioGhostProxy:
         self.udp_pending_connect: dict[tuple[str, int, int], tuple[str, int]] = {}
         self.events: deque[dict[str, object]] = deque(maxlen=400)
         self.event_seq: int = 0
+        self.piece_totals: dict[str, int] = {}
 
     def _log(self, message: str, *args: object) -> None:
         if self.verbose:
@@ -243,33 +645,15 @@ class RatioGhostProxy:
         event = (params.get("event") or [""])[0]
         down_diff, up_diff = self.stats.update_actual(info_hash, event, downloaded, uploaded, left)
 
-        prev = self.stats.reported_last.get(info_hash, (0, 0, 0))
-        prev_down, prev_up, _ = prev
-        elapsed = int(time.time()) - self.stats.reported_last_time.get(info_hash, int(time.time()))
-        peers = self.stats.response.get((info_hash, "incomplete"), 0)
+        _, prev_up, _ = self.stats.reported_last.get(info_hash, (0, 0, 0))
 
         if int(self.settings.get("no_download", 0)):
             downloaded = 0
-            first = self.stats.actual_first.get(info_hash)
-            if first:
-                left = first[2]
-            if int(self.settings.get("seed", 0)):
-                left = 0
+            left = 0
             if event == "completed":
                 params.pop("event", None)
 
-        min_peers = int(self.settings.get("min_peers", 5))
-        if peers >= min_peers:
-            down_ratio = random.uniform(float(self.settings["updown_ratio_a"]), float(self.settings["updown_ratio_b"]))
-            up_ratio = random.uniform(float(self.settings["upup_ratio_a"]), float(self.settings["upup_ratio_b"]))
-
-            uploaded = int(prev_up + up_diff + (down_ratio * down_diff) + (up_ratio * up_diff))
-
-            if random.random() * 100 < float(self.settings.get("boost_chance", 5)):
-                boost = float(self.settings.get("boost", 15)) * 1024 * max(1, elapsed) * random.random()
-                uploaded += int(boost)
-        else:
-            uploaded = int(prev_up + up_diff)
+        uploaded = prev_up + up_diff
 
         if event != "started" and uploaded < prev_up:
             return None
@@ -292,7 +676,7 @@ class RatioGhostProxy:
             left,
         )
         self._add_event(
-            f"{host}:{port} down/up from {original_downloaded}/{original_uploaded} to {downloaded}/{uploaded}"
+            f"{host}:{port} down/up from {original_downloaded}/{original_uploaded} to {downloaded}/{uploaded}, left={left}"
             + (f" ({event})" if event else "")
         )
         return rewritten.geturl()
@@ -387,14 +771,48 @@ class RatioGhostProxy:
             await self._safe_close(client_writer)
             return
 
-        async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+        outbound_inspector: _PeerWireInspector | None = None
+        inbound_inspector: _PeerWireInspector | None = None
+        if int(self.settings.get("inspect_bitfield", 0)):
+            outbound_inspector = _PeerWireInspector(self.piece_totals, report=True)
+            inbound_inspector = _PeerWireInspector(self.piece_totals, report=False)
+
+        # One stateful rewriter per outbound TCP connection. It parses the
+        # BitTorrent handshake, resolves the matching qBittorrent .torrent,
+        # and replaces outgoing BITFIELD messages with a 100% bitfield.
+        outbound_rewriter = _PeerWireRewriter(self.piece_totals)
+
+        async def pipe(
+            src: asyncio.StreamReader,
+            dst: asyncio.StreamWriter,
+            watch: _PeerWireInspector | None = None,
+            rewriter: _PeerWireRewriter | None = None,
+        ) -> None:
             try:
                 while True:
                     chunk = await src.read(8192)
                     if not chunk:
                         break
+
+                    if rewriter is not None:
+                        chunk = rewriter.feed(chunk)
+                        # feed() may keep a partial handshake/message buffered
+                        # until the next TCP read.
+                        if not chunk:
+                            continue
+
+                    # Inspect after rewriting so events describe what is actually
+                    # sent to the remote peer.
+                    if watch is not None:
+                        for note in watch.feed(chunk):
+                            self._add_event(f"{host}:{port} {note}")
+
                     if int(self.settings.get("log_tunnel_chunks", 0)):
                         self._log("tunnel chunk bytes=%s", len(chunk))
+
+
+                    if rewriter is not None:
+                        print("[SEND] envoi du chunk réécrit :", len(chunk), "bytes")
                     dst.write(chunk)
                     await dst.drain()
             except (ConnectionResetError, BrokenPipeError, OSError):
@@ -403,8 +821,10 @@ class RatioGhostProxy:
                 await self._safe_close(dst)
 
         await asyncio.gather(
-            pipe(client_reader, remote_writer),
-            pipe(remote_reader, client_writer),
+            # qBittorrent -> peer: rewrite outgoing Peer Wire BITFIELD.
+            pipe(client_reader, remote_writer, outbound_inspector, outbound_rewriter),
+            # peer -> qBittorrent: pass through unchanged.
+            pipe(remote_reader, client_writer, inbound_inspector, None),
             return_exceptions=True,
         )
         await self._safe_close(remote_writer)
@@ -780,31 +1200,15 @@ class RatioGhostProxy:
         down_diff, up_diff = self.stats.update_actual(info_hash, event, downloaded, uploaded, left)
 
         _, prev_up, _ = self.stats.reported_last.get(info_hash, (0, 0, 0))
-        elapsed = int(time.time()) - self.stats.reported_last_time.get(info_hash, int(time.time()))
-        peers = self.stats.response.get((info_hash, "incomplete"), 0)
 
         if int(self.settings.get("no_download", 0)):
             downloaded = 0
-            first = self.stats.actual_first.get(info_hash)
-            if first:
-                left = first[2]
-            if int(self.settings.get("seed", 0)):
-                left = 0
+            left = 0
             if event_code == 1:
                 event_code = 0
                 event = ""
 
-        min_peers = int(self.settings.get("min_peers", 5))
-        if peers >= min_peers:
-            down_ratio = random.uniform(float(self.settings["updown_ratio_a"]), float(self.settings["updown_ratio_b"]))
-            up_ratio = random.uniform(float(self.settings["upup_ratio_a"]), float(self.settings["upup_ratio_b"]))
-            uploaded = int(prev_up + up_diff + (down_ratio * down_diff) + (up_ratio * up_diff))
-            if random.random() * 100 < float(self.settings.get("boost_chance", 5)):
-                boost = float(self.settings.get("boost", 15)) * 1024 * max(1, elapsed) * random.random()
-                uploaded += int(boost)
-        else:
-            uploaded = int(prev_up + up_diff)
-
+        uploaded = prev_up + up_diff
         if event != "started" and uploaded < prev_up:
             uploaded = prev_up
 
@@ -819,7 +1223,7 @@ class RatioGhostProxy:
             left,
         )
         self._add_event(
-            f"{host}:{port} UDP down/up to {downloaded}/{uploaded}" + (f" ({event})" if event else "")
+            f"{host}:{port} UDP down/up to {downloaded}/{uploaded}, left={left}" + (f" ({event})" if event else "")
         )
 
         payload = struct.pack(

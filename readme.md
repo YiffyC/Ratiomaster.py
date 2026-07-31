@@ -81,7 +81,7 @@ Pour l'activer:
 
 Important:
 - pour que le client accepte l'interception HTTPS, le certificat local doit etre installe comme certificat de confiance (OS/client BitTorrent).
-- `mitm_insecure_upstream=1` desactive la verification TLS vers le tracker distant (plus permissif). Utilisez `0` si vous voulez verifier le certificat upstream.
+- la verification TLS vers le tracker distant est permissive par defaut (`mitm_insecure_upstream`, non expose dans la WebUI). Ajoutez `"mitm_insecure_upstream": 0` dans `settings.json` si vous voulez verifier le certificat upstream.
 
 ## Configuration UDP (BEP 15)
 
@@ -91,18 +91,21 @@ Le routage UDP multi-trackers est automatique quand le client envoie des datagra
 
 En fallback, le proxy reutilise le mapping BEP 15 `connection_id -> tracker` par client.
 
-En dernier recours, vous pouvez definir un upstream statique:
+En dernier recours (non expose dans la WebUI, a ajouter manuellement dans `settings.json`), vous pouvez definir un upstream statique:
 - `udp_upstream_host`: hostname/IP du tracker UDP distant
 - `udp_upstream_port`: port UDP du tracker distant
 
-Ces valeurs sont stockees dans `settings.json` et servent de secours.
+Pour du debug bas niveau TCP (non expose dans la WebUI), ajoutez `"log_tunnel_chunks": 1` dans `settings.json`.
 
-Pour limiter le bruit des logs HTTPS tunnel en mode `--verbose`, laissez `log_tunnel_chunks=0` (defaut).
-Mettez `log_tunnel_chunks=1` seulement pour du debug bas niveau TCP.
+## Mode stealth (download)
+
+L'interface et les settings ont ete reduits a l'essentiel pour un usage stealth uniquement:
+- `no_download=1`: force `downloaded=0` et `left=0` dans chaque announce, quel que soit le vrai progres du telechargement. `uploaded` n'est jamais modifie (aucune inflation d'upload).
+- `only_tracker` et `only_local` restent actifs en interne (valeur fixe `1`, non modifiables via la WebUI).
 
 ## Limites du portage
 
 - L'interface GUI Tcl/Tk n'est pas reproduite ici.
 - Le flux TLS MITM historique n'est pas reproduit a l'identique.
-- Sans en-tete SOCKS5 UDP et sans mapping `connection_id`, il faut un upstream statique (`udp_upstream_host`/`udp_upstream_port`).
+- Sans en-tete SOCKS5 UDP et sans mapping `connection_id`, il faut un upstream statique (`udp_upstream_host`/`udp_upstream_port` dans `settings.json`).
 - Le comportement reste axe sur la logique proxy/tracker et les statistiques.

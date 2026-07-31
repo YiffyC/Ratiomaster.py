@@ -29,98 +29,144 @@ HTML_PAGE = """<!doctype html>
   <title>Ratio Ghost - WebUI</title>
   <style>
     :root {
-      --bg: #f2f5f7;
-      --card: #ffffff;
-      --text: #1e2a32;
-      --muted: #61727f;
-      --accent: #0e7c86;
-      --accent-2: #15909c;
-      --line: #d9e1e6;
-      --danger: #b94747;
+      --text: #1c1c1e;
+      --muted: rgba(60, 60, 67, 0.6);
+      --accent: #0a84ff;
+      --accent-2: #5e5ce6;
+      --danger: #ff453a;
+      --glass-bg: rgba(255, 255, 255, 0.55);
+      --glass-bg-strong: rgba(255, 255, 255, 0.75);
+      --glass-border: rgba(255, 255, 255, 0.6);
+      --glass-shadow: 0 8px 32px rgba(31, 38, 80, 0.14);
+      --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+      --field-bg: rgba(255, 255, 255, 0.6);
+      --field-border: rgba(60, 60, 67, 0.18);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --text: #f2f2f7;
+        --muted: rgba(235, 235, 245, 0.6);
+        --glass-bg: rgba(40, 40, 46, 0.55);
+        --glass-bg-strong: rgba(50, 50, 58, 0.7);
+        --glass-border: rgba(255, 255, 255, 0.14);
+        --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+        --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        --field-bg: rgba(20, 20, 24, 0.45);
+        --field-border: rgba(255, 255, 255, 0.14);
+      }
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at 0% 0%, #d8ecee 0, transparent 35%),
-        radial-gradient(circle at 100% 100%, #e7f1e3 0, transparent 30%),
-        var(--bg);
+        radial-gradient(circle at 12% 8%, #7fd8ff 0, transparent 40%),
+        radial-gradient(circle at 88% 15%, #c99bff 0, transparent 45%),
+        radial-gradient(circle at 20% 90%, #a0f0c8 0, transparent 40%),
+        radial-gradient(circle at 90% 85%, #ffb4c6 0, transparent 45%),
+        linear-gradient(135deg, #eaf3ff, #f6ecff 60%, #eafff5);
+      background-attachment: fixed;
+      background-size: 140% 140%;
+      animation: drift 24s ease-in-out infinite alternate;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background:
+          radial-gradient(circle at 12% 8%, rgba(10, 132, 255, 0.35) 0, transparent 40%),
+          radial-gradient(circle at 88% 15%, rgba(94, 92, 230, 0.35) 0, transparent 45%),
+          radial-gradient(circle at 20% 90%, rgba(48, 209, 88, 0.22) 0, transparent 40%),
+          radial-gradient(circle at 90% 85%, rgba(255, 69, 58, 0.2) 0, transparent 45%),
+          linear-gradient(135deg, #0b0b10, #131018 60%, #0c1210);
+      }
+    }
+    @keyframes drift {
+      from { background-position: 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%; }
+      to { background-position: 6% 4%, -6% -4%, 4% -6%, -4% 6%, 0% 0%; }
     }
     .wrap { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
-    .hero {
-      padding: 8px 0 12px;
-      margin-bottom: 8px;
-    }
-    .brand {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
-    .brand img {
-      width: min(92vw, 520px);
-      height: auto;
-      max-height: 120px;
-      object-fit: contain;
-    }
+    .hero { padding: 8px 0 12px; margin-bottom: 8px; }
+    .brand { display: flex; justify-content: center; align-items: center; }
+    .brand img { width: min(92vw, 520px); height: auto; max-height: 120px; object-fit: contain; }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
+      gap: 14px;
       margin-bottom: 16px;
     }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-      min-height: 100px;
+    .card, .panel {
+      background: var(--glass-bg);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      backdrop-filter: blur(24px) saturate(180%);
+      border: 1px solid var(--glass-border);
+      border-radius: 26px;
+      padding: 16px 18px;
+      box-shadow: var(--glass-shadow), var(--glass-highlight);
+      transition: transform .25s ease, box-shadow .25s ease;
     }
-    .events-card { min-height: 180px; }
+    .card { min-height: 100px; }
+    .card:hover { transform: translateY(-2px); }
+    .events-card { min-height: 180px; margin-bottom: 16px; }
     .events-box {
       margin-top: 8px;
-      max-height: 120px;
-      overflow: auto;
+      max-height: 220px;
+      overflow-y: auto;
+      overflow-x: hidden;
       white-space: pre-wrap;
-      background: #f7fbfc;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px;
+      overflow-wrap: anywhere;
+      background: rgba(0, 0, 0, 0.06);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 10px;
       font-size: 12px;
+      font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
       color: var(--text);
+    }
+    @media (prefers-color-scheme: dark) {
+      .events-box { background: rgba(0, 0, 0, 0.35); }
     }
     .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
     .v { margin-top: 8px; font-size: 24px; font-weight: 600; }
-    .panel {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-    }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
     label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
     input[type="text"], input[type="number"] {
       width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      font-size: 14px;
-      background: #fff;
-    }
-    input[type="checkbox"] { transform: translateY(1px); margin-right: 6px; }
-    .actions { display: flex; gap: 8px; margin-top: 6px; }
-    button {
-      border: 0;
-      border-radius: 10px;
+      border: 1px solid var(--field-border);
+      border-radius: 14px;
       padding: 9px 12px;
+      font-size: 14px;
+      background: var(--field-bg);
+      color: var(--text);
+      outline: none;
+      transition: box-shadow .2s ease, border-color .2s ease;
+    }
+    input[type="text"]:focus, input[type="number"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.22);
+    }
+    input[type="checkbox"] { transform: translateY(1px) scale(1.1); margin-right: 8px; accent-color: var(--accent); }
+    .actions { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+    button {
+      border: 1px solid var(--glass-border);
+      border-radius: 999px;
+      padding: 10px 18px;
       cursor: pointer;
       color: #fff;
-      background: var(--accent);
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+      box-shadow: 0 4px 14px rgba(10, 132, 255, 0.35), var(--glass-highlight);
       font-weight: 600;
+      font-family: inherit;
+      transition: transform .15s ease, box-shadow .15s ease;
     }
-    button.secondary { background: #8b9aa5; }
-    button.danger { background: var(--danger); }
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: scale(0.96); }
+    button.secondary {
+      background: var(--glass-bg-strong);
+      color: var(--text);
+      box-shadow: var(--glass-shadow), var(--glass-highlight);
+    }
+    button.danger { background: linear-gradient(180deg, var(--danger), #c4281d); box-shadow: 0 4px 14px rgba(255, 69, 58, 0.35), var(--glass-highlight); }
     .status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 18px; }
     @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
   </style>
@@ -134,49 +180,28 @@ HTML_PAGE = """<!doctype html>
     </section>
     <section class="grid">
       <article class="card"><div class="k">Etat proxy</div><div class="v" id="state">-</div></article>
-      <article class="card events-card"><div class="k">Events</div><pre id="events" class="events-box"></pre></article>
+      <article class="card"><div class="k">Stealth download</div><div class="v" id="stealth_state">-</div></article>
       <article class="card"><div class="k">Runtime</div><div class="v" id="runtime">-</div></article>
+    </section>
+    <section class="card events-card">
+      <div class="k">Events</div>
+      <pre id="events" class="events-box"></pre>
     </section>
     <section class="panel">
       <div class="row">
         <div><label>Listen port</label><input id="listen_port" type="number" min="1" max="65535"></div>
-        <div><label>Min peers</label><input id="min_peers" type="number" min="0" max="100000"></div>
-      </div>
-      <div class="row">
-        <div><label>UDP upstream host</label><input id="udp_upstream_host" type="text"></div>
-        <div><label>UDP upstream port</label><input id="udp_upstream_port" type="number" min="0" max="65535"></div>
-      </div>
-      <div class="row">
-        <div><label>Boost</label><input id="boost" type="number" min="0" max="1000000"></div>
-        <div><label>Boost chance (%)</label><input id="boost_chance" type="number" min="0" max="100"></div>
-      </div>
-      <div class="row">
-        <div><label>Upload ratio A</label><input id="upup_ratio_a" type="number" step="0.01"></div>
-        <div><label>Upload ratio B</label><input id="upup_ratio_b" type="number" step="0.01"></div>
-      </div>
-      <div class="row">
-        <div><label>Up/Down ratio A</label><input id="updown_ratio_a" type="number" step="0.01"></div>
-        <div><label>Up/Down ratio B</label><input id="updown_ratio_b" type="number" step="0.01"></div>
-      </div>
-      <div class="row">
         <div><label><input id="udp_enabled" type="checkbox">UDP enabled</label></div>
-        <div><label><input id="only_tracker" type="checkbox">Only tracker traffic</label></div>
       </div>
       <div class="row">
-        <div><label><input id="only_local" type="checkbox">Only local clients</label></div>
-        <div><label><input id="no_download" type="checkbox">No download mode</label></div>
-      </div>
-      <div class="row">
-        <div><label><input id="seed" type="checkbox">Seed mode</label></div>
-        <div><label><input id="log_tunnel_chunks" type="checkbox">Log tunnel chunks</label></div>
-      </div>
-      <div class="row">
-        <div><label><input id="mitm_https" type="checkbox">MITM HTTPS</label></div>
-        <div><label><input id="mitm_insecure_upstream" type="checkbox">MITM upstream insecure</label></div>
+        <div><label><input id="no_download" type="checkbox">Stealth download (masquer le telechargement, left=0)</label></div>
+        <div><label><input id="mitm_https" type="checkbox">MITM HTTPS (necessaire pour trackers en HTTPS)</label></div>
       </div>
       <div class="row">
         <div><label>MITM cert path</label><input id="mitm_cert_path" type="text"></div>
         <div><label>MITM key path</label><input id="mitm_key_path" type="text"></div>
+      </div>
+      <div class="row">
+        <div><label><input id="inspect_bitfield" type="checkbox">Observer le bitfield envoye aux peers (lecture seule, diagnostic)</label></div>
       </div>
       <div class="actions">
         <button id="save">Sauvegarder</button>
@@ -188,10 +213,7 @@ HTML_PAGE = """<!doctype html>
   </div>
   <script>
     const fields = [
-      "listen_port","min_peers","udp_upstream_host","udp_upstream_port","boost","boost_chance",
-      "upup_ratio_a","upup_ratio_b","updown_ratio_a","updown_ratio_b",
-      "udp_enabled","only_tracker","only_local","no_download","seed","log_tunnel_chunks",
-      "mitm_https","mitm_insecure_upstream","mitm_cert_path","mitm_key_path"
+      "listen_port","udp_enabled","no_download","mitm_https","mitm_cert_path","mitm_key_path","inspect_bitfield"
     ];
     let lastEventId = 0;
     let formDirty = false;
@@ -219,6 +241,7 @@ HTML_PAGE = """<!doctype html>
       if (!r.ok) throw new Error(`status ${r.status}`);
       const data = await r.json();
       document.getElementById("state").textContent = data.running ? "Running" : "Stopped";
+      document.getElementById("stealth_state").textContent = data.settings.no_download ? "Actif" : "Inactif";
       document.getElementById("runtime").textContent = data.human.runtime;
       if (!formLoaded || !formDirty) {
         fillForm(data.settings);
@@ -306,30 +329,17 @@ class WebUIApp:
     def update_settings(self, payload: dict[str, Any]) -> None:
         int_keys = {
             "listen_port",
-            "min_peers",
-            "udp_upstream_port",
-            "boost",
-            "boost_chance",
             "udp_enabled",
-            "only_tracker",
-            "only_local",
             "no_download",
-            "seed",
-            "log_tunnel_chunks",
             "mitm_https",
-            "mitm_insecure_upstream",
+            "inspect_bitfield",
         }
-        float_keys = {"upup_ratio_a", "upup_ratio_b", "updown_ratio_a", "updown_ratio_b"}
-        str_keys = {"udp_upstream_host", "mitm_cert_path", "mitm_key_path"}
+        str_keys = {"mitm_cert_path", "mitm_key_path"}
         bool_as_int = {
             "udp_enabled",
-            "only_tracker",
-            "only_local",
             "no_download",
-            "seed",
-            "log_tunnel_chunks",
             "mitm_https",
-            "mitm_insecure_upstream",
+            "inspect_bitfield",
         }
 
         for key, raw in payload.items():
@@ -338,8 +348,6 @@ class WebUIApp:
                     self.settings[key] = int(raw)
                 else:
                     self.settings[key] = int(str(raw).strip() or "0")
-            elif key in float_keys:
-                self.settings[key] = float(str(raw).strip() or "0")
             elif key in str_keys:
                 self.settings[key] = str(raw).strip()
 
@@ -527,7 +535,11 @@ async def main() -> None:
     totals = proxy.get_totals()
     store.save(totals)
     if app.restart_requested:
-        os.execv(sys.executable, [sys.executable, *sys.argv])
+        cli_args = sys.argv[1:]
+        if getattr(sys, "frozen", False):
+            os.execv(sys.executable, [sys.executable, *cli_args])
+        else:
+            os.execv(sys.executable, [sys.executable, "-m", "rgpy.webui", *cli_args])
 
 
 if __name__ == "__main__":
