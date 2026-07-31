@@ -1,111 +1,184 @@
-# RGPy (core)
+# Ratiomaster.py
 
-Ce dossier contient un portage Python de la logique principale de Ratio Ghost:
-- chargement/sauvegarde des settings
-- proxy HTTP local
-- proxy UDP local (BEP 15 `connect`/`announce`)
-- re-ecriture des announces tracker (`downloaded`, `uploaded`, `left`)
-- aggregation des statistiques
+A Python reimplementation of the core proxy/tracker logic behind classic BitTorrent
+ratio-management tools. Pure standard library — no third-party dependencies.
+Runs on **Linux, Windows, and macOS** — same codebase, no platform-specific fork.
 
-## Lancement
+Built and shared for **educational and research purposes**: understanding tracker/proxy
+behavior, protocol experimentation, and testing in controlled environments (your own
+tracker, your own lab). See the Disclaimer section before using it anywhere else.
+
+## What it does
+
+Ratiomaster.py is a **ratio-maintenance tool**: its purpose is to let your BitTorrent
+downloads happen normally in the background without them being counted against your
+reported ratio — that's it. It is **not an upload-inflation tool**: it never fabricates
+or boosts the upload figures reported to the tracker, only your real, actual upload
+counts.
+
+Concretely, it runs a small local proxy that sits between your BitTorrent client and
+the trackers it talks to, and intercepts tracker announce traffic (HTTP, HTTPS via
+optional MITM, and UDP/BEP 15). When stealth mode is enabled, it reports `downloaded=0`
+and `left=0` to the tracker regardless of your real download progress — your client
+keeps downloading normally, the tracker just never sees it as a debit against your
+ratio. An optional web dashboard shows live stats and an event log.
+
+This README stays high-level on purpose — see `rgpy/proxy.py` if you need the
+implementation details of the rewriting logic.
+
+## Platforms
+
+| OS | Status |
+|---|---|
+| Linux | Supported — prebuilt binary via GitHub Actions (`rgpy-ubuntu-latest`) |
+| Windows | Supported — prebuilt binary via GitHub Actions (`rgpy-windows-latest`) |
+| macOS | Supported — prebuilt binary via GitHub Actions (`rgpy-macos-latest`) |
+
+The whole project is standard-library-only asyncio Python, so no OS-specific code
+paths to worry about beyond what Python itself already smooths over.
+
+## Requirements
+
+- Python 3.10+
+- No third-party packages required
+
+## Installation
 
 ```bash
-python -m rgpy.app
+git clone <this-repo>
+cd Ratiomaster.py
 ```
 
-Optionnel:
+Nothing else to install.
+
+## Usage
+
+### Terminal only (no web interface)
 
 ```bash
-python -m rgpy.app --port 3773
+python -m rgpy.app --port 3773 --verbose
 ```
 
-## Lancement WebUI
+Prints live status to the terminal; stop with Ctrl+C. Settings are read from and
+written to `settings.json` (see Configuration below).
+
+### With the web dashboard
 
 ```bash
 python -m rgpy.webui --port 3773 --webui-port 8088 --verbose
 ```
 
-Puis ouvrir:
+Then open:
 
-```text
+```
 http://127.0.0.1:8088
 ```
 
-## Build Executables (PyInstaller)
+The dashboard shows proxy status and an event log, lets you edit and save the main
+settings, and can restart the process from a button (no need for a separate terminal
+command).
 
-Depuis la racine du repo:
+## Configuration
+
+Settings persist in `settings.json`, created automatically on first run.
+
+| Key | Purpose |
+|---|---|
+| `listen_port` | Proxy listen port — point your BitTorrent client's proxy setting here |
+| `udp_enabled` | Enables the UDP tracker proxy (BEP 15) |
+| `no_download` | Stealth mode for the download counters reported to the tracker |
+| `mitm_https` | Enables HTTPS interception (requires a trusted local certificate) |
+| `mitm_cert_path` / `mitm_key_path` | Local TLS certificate/key used for HTTPS interception |
+| `inspect_bitfield` | Optional, read-only diagnostic: logs peer-wire handshake/bitfield activity without modifying any traffic |
+
+A few advanced/fallback options (static UDP upstream, low-level tunnel logging,
+upstream TLS verification) exist but aren't exposed in the dashboard — add them
+directly to `settings.json` if needed; see `rgpy/settings.py` and `rgpy/proxy.py`.
+
+### HTTPS interception (MITM)
+
+Disabled by default. To use it:
+1. Enable `MITM HTTPS` in the dashboard (or set `mitm_https: 1` in `settings.json`).
+2. Make sure `mitm_cert_path` / `mitm_key_path` point to a valid certificate/key pair
+   (`tls/server.crt` / `tls/server.key` by default).
+3. Install that certificate as trusted on the OS or BitTorrent client — otherwise the
+   TLS handshake will fail.
+4. Restart the process.
+
+## Building standalone executables
 
 ```bash
 python -m pip install pyinstaller
 python scripts/build_binaries.py
 ```
 
-Sortie:
-- `dist/rgpy-cli(.exe)`
-- `dist/rgpy-webui(.exe)`
+Produces `dist/rgpy-cli(.exe)` and `dist/rgpy-webui(.exe)`, built from `rgpy_cli.py`
+and `rgpy_webui.py`.
 
-Lanceurs sources utilises:
-- `rgpy_cli.py`
-- `rgpy_webui.py`
+Prebuilt binaries are also available via GitHub Actions
+(`.github/workflows/build-binaries.yml` → `Run workflow` from the `Actions` tab) for
+Windows, Ubuntu, and macOS.
 
-## Telechargement sans sources (GitHub Actions)
+## Limitations
 
-Le workflow `.github/workflows/build-binaries.yml` produit des artefacts telechargeables:
-- `rgpy-windows-latest`
-- `rgpy-ubuntu-latest`
-- `rgpy-macos-latest`
+- The original Tcl/Tk GUI is not reproduced here.
+- The historical MITM TLS flow isn't reproduced exactly.
+- Without a SOCKS5 UDP header or an existing `connection_id` mapping, UDP tracker
+  routing needs a manually configured static upstream.
 
-Usage:
-1. pousser le repo sur GitHub
-2. ouvrir l'onglet `Actions` -> `Build Binaries`
-3. lancer `Run workflow`
-4. telecharger les artefacts (binaires only)
+## FAQ
 
-La WebUI permet de:
-- voir les stats en direct
-- voir un journal `events` (style ancien Ratio Ghost)
-- modifier les settings principaux
-- sauvegarder les settings dans `settings.json`
-- redemarrer le programme via le bouton `Recharger (redemarrer)`
+**What platforms does this support?**
+Linux, Windows, and macOS — see the Platforms section above.
 
-Note: certains changements structurels (ex: `listen_port`, `udp_enabled`) necessitent un redemarrage du process pour s'appliquer.
+**Do I need to install anything besides Python?**
+No. No third-party packages, no build step to run it from source.
 
-## Mode MITM HTTPS
+**What is this actually for?**
+Educational and research use — studying and testing BitTorrent tracker/proxy protocol
+behavior in a controlled environment. It is not a commercial product and comes with no
+support guarantee.
 
-Le mode MITM HTTPS est desactive par defaut (`mitm_https=0`).
+**Does this inflate my upload / fake my ratio upward?**
+No. It's a ratio-*maintenance* tool, not an upload-inflation tool — it never touches or
+boosts the upload figures reported to the tracker. The only thing it changes is hiding
+your real download progress from the announce, so downloading doesn't count against
+your ratio.
 
-Pour l'activer:
-- cocher `MITM HTTPS` dans la WebUI
-- verifier `mitm_cert_path` et `mitm_key_path` (par defaut: `tls/server.crt` et `tls/server.key`)
-- cliquer `Recharger (redemarrer)`
+**Does it slow down or change my real download/upload traffic?**
+No. It only rewrites what gets reported to the tracker in announce requests — it
+doesn't touch the actual data exchanged with peers.
 
-Important:
-- pour que le client accepte l'interception HTTPS, le certificat local doit etre installe comme certificat de confiance (OS/client BitTorrent).
-- la verification TLS vers le tracker distant est permissive par defaut (`mitm_insecure_upstream`, non expose dans la WebUI). Ajoutez `"mitm_insecure_upstream": 0` dans `settings.json` si vous voulez verifier le certificat upstream.
+**Does it work with HTTPS trackers?**
+Yes, through the optional local MITM mode, which requires trusting a locally generated
+certificate. See the HTTPS interception section.
 
-## Configuration UDP (BEP 15)
+**Can I be detected using this?**
+We cannot claim otherwise: **there is no guarantee you won't be detected.** Trackers
+can rely on statistical analysis, peer-level verification, or manual staff audits that
+this tool makes no attempt to defend against. Treat it as what it is — a research/test
+tool, not a guaranteed-undetectable system — and only use it on infrastructure you own
+or are explicitly authorized to test.
 
-Le support UDP est active par `udp_enabled=1`.
+**Is this legal?**
+That depends entirely on where you use it and against what. We provide no legal advice
+here — see the Disclaimer below.
 
-Le routage UDP multi-trackers est automatique quand le client envoie des datagrammes SOCKS5 UDP (destination incluse dans le paquet).
+## Credits
 
-En fallback, le proxy reutilise le mapping BEP 15 `connection_id -> tracker` par client.
+Ratiomaster.py reimplements, from scratch in Python, the core proxy and
+tracker-rewriting concepts of **Ratio Ghost**, originally created by **Yasmine**.
+Full credit for the original idea and design goes to her — this project is an
+independent Python port of the concept, not a copy of the original source.
 
-En dernier recours (non expose dans la WebUI, a ajouter manuellement dans `settings.json`), vous pouvez definir un upstream statique:
-- `udp_upstream_host`: hostname/IP du tracker UDP distant
-- `udp_upstream_port`: port UDP du tracker distant
+## Disclaimer
 
-Pour du debug bas niveau TCP (non expose dans la WebUI), ajoutez `"log_tunnel_chunks": 1` dans `settings.json`.
+This project is provided **as-is, for educational and research purposes only** — to
+study and test BitTorrent tracker/proxy protocol behavior in a controlled environment.
 
-## Mode stealth (download)
-
-L'interface et les settings ont ete reduits a l'essentiel pour un usage stealth uniquement:
-- `no_download=1`: force `downloaded=0` et `left=0` dans chaque announce, quel que soit le vrai progres du telechargement. `uploaded` n'est jamais modifie (aucune inflation d'upload).
-- `only_tracker` et `only_local` restent actifs en interne (valeur fixe `1`, non modifiables via la WebUI).
-
-## Limites du portage
-
-- L'interface GUI Tcl/Tk n'est pas reproduite ici.
-- Le flux TLS MITM historique n'est pas reproduit a l'identique.
-- Sans en-tete SOCKS5 UDP et sans mapping `connection_id`, il faut un upstream statique (`udp_upstream_host`/`udp_upstream_port` dans `settings.json`).
-- Le comportement reste axe sur la logique proxy/tracker et les statistiques.
+- Use it only on infrastructure you own or are explicitly authorized to test against.
+- We make no claim, express or implied, that its behavior is undetectable — see the
+  FAQ. Any use against a tracker or service you don't control is at your own risk.
+- You are solely responsible for complying with the rules of any tracker, service, or
+  jurisdiction that applies to you. The authors and contributors of this project accept
+  no liability for how it is used.
